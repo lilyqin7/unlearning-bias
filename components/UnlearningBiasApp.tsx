@@ -12,13 +12,15 @@ type PanelPhase =
       message: string;
       promptText: string;
       isDiverse: boolean;
-    };
+    }
+  | { type: "image"; imageUrl: string; message: string; promptText: string };
 
 type HistoryEntry = {
   id: string;
   prompt: string;
   scale: string;
   steps: string;
+  thumbUrl?: string;
 };
 
 const INITIAL_HISTORY: HistoryEntry[] = [
@@ -77,6 +79,21 @@ function LogoSvg() {
   );
 }
 
+async function downloadImageFile(url: string, filename: string) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Download failed");
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 function BiasedPanelContent({ phase }: { phase: PanelPhase }) {
   if (phase.type === "placeholder") {
     return (
@@ -93,6 +110,9 @@ function BiasedPanelContent({ phase }: { phase: PanelPhase }) {
         <span className="loading-text">{phase.message}</span>
       </div>
     );
+  }
+  if (phase.type === "image") {
+    return <img src={phase.imageUrl} alt="" className="generated-image" />;
   }
   const color = "#d4756a";
   const bgColor = "color-mix(in oklch, #d4756a 12%, var(--color-surface))";
@@ -127,6 +147,9 @@ function DiversePanelContent({ phase }: { phase: PanelPhase }) {
       </div>
     );
   }
+  if (phase.type === "image") {
+    return <img src={phase.imageUrl} alt="" className="generated-image" />;
+  }
   const color = "var(--color-primary)";
   const bgColor = "var(--color-primary-highlight)";
   return (
@@ -148,10 +171,11 @@ export function UnlearningBiasApp() {
   const [prompt, setPrompt] = useState("a portrait of a CEO");
   const [loraScale, setLoraScale] = useState(0.8);
   const [inferenceSteps, setInferenceSteps] = useState(30);
-  const [guidance, setGuidance] = useState("7");
+  const [guidance, setGuidance] = useState("7.5");
   const [isGenerating, setIsGenerating] = useState(false);
   const genLock = useRef(false);
   const [genDurationSec, setGenDurationSec] = useState<number | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const [biasedPhase, setBiasedPhase] = useState<PanelPhase>({ type: "placeholder" });
   const [diversePhase, setDiversePhase] = useState<PanelPhase>({ type: "placeholder" });
@@ -183,37 +207,68 @@ export function UnlearningBiasApp() {
     setPrompt(text);
   }, []);
 
-  const handleGenerate = useCallback(() => {
+  const handleGenerate = useCallback(async () => {
     if (genLock.current) return;
     genLock.current = true;
     setIsGenerating(true);
+    setGenerationError(null);
 
     const p = prompt.trim() || "a portrait of a CEO";
     const scale = loraScale.toFixed(2);
     const steps = String(inferenceSteps);
+    const guidanceScale = parseFloat(guidance);
 
     setBiasedPhase({ type: "loading", message: "Generating · SDXL 1.0 baseline..." });
     setDiversePhase({ type: "loading", message: `Generating · div_rep scale=${scale}...` });
     setBiasedMeta("Generating · SDXL 1.0 baseline...");
     setDiverseMeta(`Generating · div_rep scale=${scale}...`);
 
-    const genTimeMs = 2000 + Math.random() * 2000;
+    const clientStarted = performance.now();
 
-    window.setTimeout(() => {
-      const sec = genTimeMs / 1000;
-      setGenDurationSec(sec);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: p,
+          loraScale,
+          numInferenceSteps: inferenceSteps,
+          guidanceScale,
+        }),
+      });
+
+      const data = (await res.json()) as {
+        error?: string;
+        hint?: string;
+        baselineUrl?: string;
+        diverseUrl?: string;
+        durationMs?: number;
+      };
+
+      if (!res.ok) {
+        const detail = [data.error, data.hint].filter(Boolean).join(" ");
+        throw new Error(detail || `Generation failed (${res.status})`);
+      }
+
+      if (!data.baselineUrl || !data.diverseUrl) {
+        throw new Error("Server response missing image URLs");
+      }
+
+      const elapsedSec =
+        typeof data.durationMs === "number" ? data.durationMs / 1000 : (performance.now() - clientStarted) / 1000;
+      setGenDurationSec(elapsedSec);
 
       setBiasedPhase({
-        type: "demo-result",
+        type: "image",
+        imageUrl: data.baselineUrl,
         message: "Generated · SDXL 1.0 base · No LoRA",
         promptText: p,
-        isDiverse: false,
       });
       setDiversePhase({
-        type: "demo-result",
+        type: "image",
+        imageUrl: data.diverseUrl,
         message: `Generated · div_rep LoRA · scale=${scale}`,
         promptText: p,
-        isDiverse: true,
       });
       setBiasedMeta("Generated · SDXL 1.0 base · No LoRA");
       setDiverseMeta(`Generated · div_rep LoRA · scale=${scale}`);
@@ -221,20 +276,28 @@ export function UnlearningBiasApp() {
       setInsightsVisible(true);
       setBiasScoreNote("↑ Male/White skew in baseline");
       setAppliedScaleNote(`${Math.round(parseFloat(scale) * 100)}% LoRA influence`);
-      setGenTimeNote(`${steps} denoising steps · T4 GPU`);
+      setGenTimeNote(`${steps} denoising steps · GPU backend`);
 
       const entry: HistoryEntry = {
         id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
         prompt: p,
         scale,
         steps,
+        thumbUrl: data.diverseUrl,
       };
       setHistory((h) => [entry, ...h]);
-
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Generation failed";
+      setGenerationError(msg);
+      setBiasedPhase({ type: "placeholder" });
+      setDiversePhase({ type: "placeholder" });
+      setBiasedMeta("Ready");
+      setDiverseMeta("Ready");
+    } finally {
       genLock.current = false;
       setIsGenerating(false);
-    }, genTimeMs);
-  }, [prompt, loraScale, inferenceSteps]);
+    }
+  }, [prompt, loraScale, inferenceSteps, guidance]);
 
   const themeAria = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
 
@@ -295,7 +358,7 @@ export function UnlearningBiasApp() {
         <div className="status-bar">
           <div className="status-left">
             <div className="status-dot" />
-            <span>GPU Backend Ready · T4 · SDXL 1.0</span>
+            <span>GPU · Colab / FastAPI · SDXL 1.0 + HF LoRA URL</span>
           </div>
           <span className="status-right">network_dim: 32 · network_alpha: 16 · num_inference_steps: 30</span>
         </div>
@@ -310,7 +373,7 @@ export function UnlearningBiasApp() {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
             />
-            <button type="button" className="btn-generate" disabled={isGenerating} onClick={handleGenerate}>
+            <button type="button" className="btn-generate" disabled={isGenerating} onClick={() => void handleGenerate()}>
               {isGenerating ? (
                 <>
                   <div className="loading-spinner inline-spinner" />
@@ -326,6 +389,12 @@ export function UnlearningBiasApp() {
               )}
             </button>
           </div>
+
+          {generationError ? (
+            <p className="generation-error" role="alert">
+              {generationError}
+            </p>
+          ) : null}
 
           <div className="controls">
             <div className="control-group">
@@ -362,7 +431,7 @@ export function UnlearningBiasApp() {
               <span className="control-label">Guidance Scale</span>
               <select className="control-select" value={guidance} onChange={(e) => setGuidance(e.target.value)}>
                 <option value="5">5.0 — Creative</option>
-                <option value="7">7.5 — Balanced</option>
+                <option value="7.5">7.5 — Balanced</option>
                 <option value="9">9.0 — Faithful</option>
                 <option value="12">12.0 — Strict</option>
               </select>
@@ -418,8 +487,16 @@ export function UnlearningBiasApp() {
             </div>
             <div className="panel-footer">
               <span className="panel-meta">{biasedMeta}</span>
-              {biasedPhase.type === "demo-result" ? (
-                <button type="button" className="btn-download">
+              {biasedPhase.type === "demo-result" || biasedPhase.type === "image" ? (
+                <button
+                  type="button"
+                  className="btn-download"
+                  onClick={() => {
+                    if (biasedPhase.type === "image") {
+                      void downloadImageFile(biasedPhase.imageUrl, "baseline.png");
+                    }
+                  }}
+                >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                     <polyline points="7 10 12 15 17 10" />
@@ -447,8 +524,16 @@ export function UnlearningBiasApp() {
             </div>
             <div className="panel-footer">
               <span className="panel-meta">{diverseMeta}</span>
-              {diversePhase.type === "demo-result" ? (
-                <button type="button" className="btn-download">
+              {diversePhase.type === "demo-result" || diversePhase.type === "image" ? (
+                <button
+                  type="button"
+                  className="btn-download"
+                  onClick={() => {
+                    if (diversePhase.type === "image") {
+                      void downloadImageFile(diversePhase.imageUrl, "diverse-lora.png");
+                    }
+                  }}
+                >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                     <polyline points="7 10 12 15 17 10" />
@@ -498,18 +583,22 @@ export function UnlearningBiasApp() {
               >
                 <div className="history-thumb">
                   <div className="history-thumb-inner" style={{ background: "var(--color-primary-highlight)" }}>
-                    <svg
-                      width="24"
-                      height="24"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="var(--color-primary)"
-                      strokeWidth="1.5"
-                      opacity="0.6"
-                    >
-                      <circle cx="12" cy="8" r="4" />
-                      <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
-                    </svg>
+                    {item.thumbUrl ? (
+                      <img src={item.thumbUrl} alt="" className="history-thumb-img" />
+                    ) : (
+                      <svg
+                        width="24"
+                        height="24"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="var(--color-primary)"
+                        strokeWidth="1.5"
+                        opacity="0.6"
+                      >
+                        <circle cx="12" cy="8" r="4" />
+                        <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
+                      </svg>
+                    )}
                   </div>
                 </div>
                 <div className="history-info">

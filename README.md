@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Unlearning Bias (Colab-first)
 
-## Getting Started
+Next.js app that compares **baseline SDXL** vs **SDXL + your LoRA** for the same prompt. On this branch the **intended path** is:
 
-First, run the development server:
+**Laptop (Next.js)** → **ngrok URL** → **Google Colab GPU** running `self-hosted-inference/server.py`.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for a diagram and folder map. Full Colab/ngrok steps: **[self-hosted-inference/README.md](./self-hosted-inference/README.md)**.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Quick start (Colab + Next.js)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. **Install**
 
-## Learn More
+   ```bash
+   npm install
+   ```
 
-To learn more about Next.js, take a look at the following resources:
+2. **Colab** — New notebook, **GPU** runtime, upload or clone this repo’s **`self-hosted-inference/`** folder, install deps, run `uvicorn`, expose port **8000** with **ngrok** (see linked README).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+3. **`.env.local`** (project root, next to `package.json`):
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+   ```env
+   INFERENCE_API_URL=https://YOUR-SUBDOMAIN.ngrok-free.app
+   LORA_WEIGHTS_URL=https://huggingface.co/you/repo/resolve/main/your-lora.safetensors
+   IMAGE_GENERATION_BACKEND=self
+   INFERENCE_API_NGROK_SKIP_BROWSER_WARNING=1
+   ```
 
-## Deploy on Vercel
+   Omit `REPLICATE_API_TOKEN`, `SAGEMAKER_ENDPOINT_NAME`, and `AWS_*` unless you use those backends.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+4. **Run**
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+   ```bash
+   npm run dev
+   ```
+
+   Open [http://localhost:3000](http://localhost:3000) and click **Generate** while Colab + ngrok stay connected.
+
+---
+
+## Optional backends
+
+| Backend | When to use | Docs |
+|--------|-------------|------|
+| **Replicate** | Fastest setup; paid API, no Colab | Root **`.env.example`** Replicate block, `lib/generate-comparison/replicate.ts` |
+| **SageMaker** | AWS-hosted GPU; note sync invoke limits | **`sagemaker/README.md`** |
+
+---
+
+## Troubleshooting (Colab)
+
+| Issue | Check |
+|-------|--------|
+| 500 missing `LORA_WEIGHTS_URL` | Set HF **resolve** `.safetensors` URL in `.env.local`. |
+| Wrong backend | `IMAGE_GENERATION_BACKEND=self`; remove stray `SAGEMAKER_ENDPOINT_NAME`. |
+| Non-JSON / HTML from tunnel | `INFERENCE_API_NGROK_SKIP_BROWSER_WARNING=1`. |
+| Connection refused | Colab runtime still running, ngrok tunnel fresh, `INFERENCE_API_URL` is **origin only** (no `/generate`). |
+
+---
+
+## Deploy / Vercel
+
+Server-side generation needs your **Colab URL** or cloud GPU reachable from the deploy region; secrets go in the host’s env UI, not the repo. See [Next.js env docs](https://nextjs.org/docs/app/guides/environment-variables).
