@@ -1,8 +1,8 @@
-# Architecture (Colab-first branch)
+# Architecture
 
-This branch treats **Google Colab + ngrok + FastAPI** as the primary inference path. **Replicate** and **SageMaker** are optional alternatives.
+This app has one generation backend: a self-hosted FastAPI server running SDXL on a GPU.
 
-## Request flow (primary: Colab)
+## Request Flow
 
 ```mermaid
 flowchart LR
@@ -11,52 +11,73 @@ flowchart LR
   end
   subgraph next [Next.js server]
     API["POST /api/generate"]
-    GC[lib/generate-comparison]
+    GC[generateComparison]
     SH[generateWithSelfHosted]
   end
-  subgraph remote [Your GPU]
-    CF[Colab uvicorn server.py]
+  subgraph remote [GPU host]
+    API2[FastAPI server.py]
     GPU[CUDA / SDXL + LoRA]
   end
   UI --> API
   API --> GC
   GC --> SH
-  SH -->|"HTTPS POST .../generate JSON"| CF
-  CF --> GPU
+  SH -->|"HTTPS POST ${INFERENCE_API_URL}/generate"| API2
+  API2 --> GPU
 ```
 
-1. **UI** (`components/UnlearningBiasApp.tsx`) calls `POST /api/generate` with prompt and hyperparameters.
-2. **`app/api/generate/route.ts`** builds `ComparisonRequest`, requires `LORA_WEIGHTS_URL`, calls `generateComparison()`.
-3. **`lib/generate-comparison/index.ts`** picks a backend via `resolveBackendMode()` (see below), then calls `generateWithSelfHosted`, `generateWithReplicate`, or `generateWithSageMaker`.
-4. **Self-hosted path** (`lib/generate-comparison/self-hosted.ts`) POSTs JSON to `${INFERENCE_API_URL}/generate`.
-5. **Colab** runs `self-hosted-inference/server.py` (FastAPI): loads SDXL, downloads LoRA from the URL in the body, returns two base64 PNGs in JSON.
+1. `components/UnlearningBiasApp.tsx` sends the prompt and generation settings to `POST /api/generate`.
+2. `app/api/generate/route.ts` validates the request and requires `INFERENCE_API_URL` and `LORA_WEIGHTS_URL`.
+3. `lib/generate-comparison/index.ts` always calls `generateWithSelfHosted`.
+4. `lib/generate-comparison/self-hosted.ts` posts JSON to `${INFERENCE_API_URL}/generate`.
+5. `self-hosted-inference/server.py` loads SDXL, generates the baseline image, loads the LoRA, generates the diverse image, and returns both PNGs as base64 JSON.
 
-## Directory map
+## Directory Map
 
-| Path | Role |
-|------|------|
-| `app/api/generate/route.ts` | HTTP API, env validation, error hints |
-| `lib/generate-comparison/` | Backend switch + Replicate / SageMaker / self-hosted clients |
-| `lib/build-sdxl-inputs.ts` | Replicate-only input shaping (baseline + debias JSON) |
-| `self-hosted-inference/` | **Colab package**: `server.py`, `requirements.txt`, setup README |
-| `sagemaker/` | Optional AWS hosting: inference code + README |
+| Path                               | Role                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------ |
+| `app/api/generate/route.ts`        | Public app API route, env validation, user-facing error hints            |
+| `lib/generate-comparison/`         | Shared request/response types and the self-hosted HTTP client            |
+| `self-hosted-inference/`           | FastAPI GPU server package: `server.py`, requirements, setup docs        |
+| `components/UnlearningBiasApp.tsx` | Client UI for prompt controls, comparison panels, history, and downloads |
 
-## Backend selection (`resolveBackendMode`)
+## Environment Contract
 
-1. `IMAGE_GENERATION_BACKEND=replicate` \| `sagemaker` \| `self` \| `http` \| `colab` → fixed mode.
-2. Else if `INFERENCE_API_URL` → **self** (Colab / local FastAPI).
-3. Else if `SAGEMAKER_ENDPOINT_NAME` → SageMaker.
-4. Else → Replicate.
+The Next.js server requires:
 
-Set `IMAGE_GENERATION_BACKEND` explicitly when you run multiple backends’ env vars in the same shell.
+```env
+INFERENCE_API_URL=https://YOUR-GPU-API.example.com
+LORA_WEIGHTS_URL=https://huggingface.co/you/repo/resolve/main/your-lora.safetensors
+INFERENCE_API_NGROK_SKIP_BROWSER_WARNING=1
+```
 
-## JSON contract (self-hosted / SageMaker body)
+`INFERENCE_API_URL` is the origin only. The app appends `/generate`.
 
-Same shape for `self-hosted-inference/server.py` and `sagemaker/inference/inference.py`: `baseline_prompt`, `diverse_prompt`, `num_inference_steps`, `guidance_scale`, `seed`, `lora_scale`, `lora_weights_url` (see `lib/generate-comparison/types.ts`).
+## JSON Contract
 
-## Optional backends
+Next.js sends this body to the FastAPI server:
 
-- **Replicate:** `lib/generate-comparison/replicate.ts`, no long-running server; paid API.
-- **SageMaker:** `lib/generate-comparison/sagemaker.ts`, `sagemaker/README.md`; sync `InvokeEndpoint` has a ~60s platform limit for heavy SDXL cold starts.
+```json
+{
+  "baseline_prompt": "a portrait of a CEO",
+  "diverse_prompt": "a portrait of a CEO, div_rep",
+  "num_inference_steps": 30,
+  "guidance_scale": 7.5,
+  "seed": 123,
+  "lora_scale": 0.8,
+  "lora_weights_url": "https://huggingface.co/you/repo/resolve/main/model.safetensors"
+}
+```
 
-Detailed Colab steps: **`self-hosted-inference/README.md`**.
+The FastAPI server returns:
+
+```json
+{
+  "baseline_image_b64": "...",
+  "diverse_image_b64": "...",
+  "mime_type": "image/png"
+}
+```
+
+## Public Hosting Notes
+
+The Next.js app can run on a managed Next host or with `next start` behind a reverse proxy. The GPU server must be reachable from that hosted Next.js server, not just from your laptop. Colab/ngrok works for demos; a persistent GPU machine or cloud GPU endpoint is the better public setup.

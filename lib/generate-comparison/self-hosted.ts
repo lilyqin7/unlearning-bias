@@ -1,7 +1,7 @@
 import { comparisonFromB64Payload } from "./b64-response";
 import type { ComparisonRequest, ComparisonResponse } from "./types";
 
-/** Same JSON body as SageMaker / `self-hosted-inference/server.py`. */
+/** Same JSON body as `self-hosted-inference/server.py`. */
 type InferencePayload = {
   baseline_prompt: string;
   diverse_prompt: string;

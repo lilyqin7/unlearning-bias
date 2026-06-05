@@ -7,7 +7,7 @@ Free GPU path: run on Google Colab (T4) or your own NVIDIA machine.
 Expose to the internet (Colab): use ngrok / cloudflared and set Next.js
 INFERENCE_API_URL to the https origin (see README.md).
 
-API matches lib/generate-comparison/self-hosted.ts and sagemaker/inference/inference.py.
+API matches lib/generate-comparison/self-hosted.ts.
 """
 
 from __future__ import annotations
