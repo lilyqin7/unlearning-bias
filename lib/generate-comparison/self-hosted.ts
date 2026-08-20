@@ -41,6 +41,11 @@ export async function generateWithSelfHosted(req: ComparisonRequest): Promise<Co
   };
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const apiKey = process.env.INFERENCE_API_KEY?.trim();
+  if (apiKey) {
+    headers["x-inference-api-key"] = apiKey;
+  }
+
   if (process.env.INFERENCE_API_NGROK_SKIP_BROWSER_WARNING === "1") {
     headers["ngrok-skip-browser-warning"] = "true";
   }

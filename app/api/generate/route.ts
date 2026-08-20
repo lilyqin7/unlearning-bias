@@ -87,6 +87,9 @@ export async function POST(request: Request) {
     if (/429|Too Many Requests/i.test(message) && /ngrok/i.test(message)) {
       hint =
         "ngrok or tunnel rate limit: wait and retry, reduce repeated Generate clicks, or move the inference server behind a stable public tunnel/domain.";
+    } else if (/Self-hosted inference failed \((401|403)\)|\b(401|403)\b|Unauthorized|Forbidden/i.test(message)) {
+      hint =
+        "The inference server rejected the request. Confirm INFERENCE_API_KEY is set to the same value in the Next.js app and the GPU inference service.";
     } else if (/Self-hosted server returned non-JSON|ngrok/i.test(message)) {
       hint =
         "The inference URL returned something other than JSON. If this is ngrok, set INFERENCE_API_NGROK_SKIP_BROWSER_WARNING=1; otherwise confirm INFERENCE_API_URL points to the FastAPI origin, not a landing page.";

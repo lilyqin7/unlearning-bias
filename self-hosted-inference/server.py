@@ -13,6 +13,7 @@ API matches lib/generate-comparison/self-hosted.ts.
 from __future__ import annotations
 
 import base64
+import hmac
 import io
 import os
 import tempfile
@@ -21,7 +22,7 @@ from typing import Any
 
 import torch
 from diffusers import StableDiffusionXLPipeline
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -80,6 +81,14 @@ def _image_to_b64(img: Image.Image) -> str:
     return base64.standard_b64encode(buf.getvalue()).decode("ascii")
 
 
+def _require_api_key(provided_key: str | None) -> None:
+    expected_key = os.environ.get("INFERENCE_API_KEY", "").strip()
+    if not expected_key:
+        return
+    if not provided_key or not hmac.compare_digest(provided_key, expected_key):
+        raise HTTPException(status_code=401, detail="Invalid inference API key")
+
+
 class GenerateBody(BaseModel):
     baseline_prompt: str
     diverse_prompt: str
@@ -96,7 +105,12 @@ def health() -> dict[str, str]:
 
 
 @app.post("/generate")
-def generate(body: GenerateBody) -> dict[str, Any]:
+def generate(
+    body: GenerateBody,
+    x_inference_api_key: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_api_key(x_inference_api_key)
+
     pipe = _get_pipe()
     _unload_lora(pipe)
 

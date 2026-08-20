@@ -2,55 +2,58 @@
 
 This app has one generation backend: a self-hosted FastAPI server running SDXL on a GPU.
 
-## Request Flow
+## Docker Request Flow
 
 ```mermaid
 flowchart LR
-  subgraph client [Browser]
-    UI[UnlearningBiasApp]
+  subgraph public [Public Internet]
+    User[Browser]
   end
-  subgraph next [Next.js server]
+  subgraph compose [Docker host]
+    Web[web: Next.js standalone server]
     API["POST /api/generate"]
-    GC[generateComparison]
-    SH[generateWithSelfHosted]
-  end
-  subgraph remote [GPU host]
-    API2[FastAPI server.py]
+    Inference[inference: FastAPI server.py]
     GPU[CUDA / SDXL + LoRA]
   end
-  UI --> API
-  API --> GC
-  GC --> SH
-  SH -->|"HTTPS POST ${INFERENCE_API_URL}/generate"| API2
-  API2 --> GPU
+  User -->|"http(s)://your-domain"| Web
+  Web --> API
+  API -->|"http://inference:8000/generate + x-inference-api-key"| Inference
+  Inference --> GPU
 ```
 
-1. `components/UnlearningBiasApp.tsx` sends the prompt and generation settings to `POST /api/generate`.
-2. `app/api/generate/route.ts` validates the request and requires `INFERENCE_API_URL` and `LORA_WEIGHTS_URL`.
-3. `lib/generate-comparison/index.ts` always calls `generateWithSelfHosted`.
-4. `lib/generate-comparison/self-hosted.ts` posts JSON to `${INFERENCE_API_URL}/generate`.
-5. `self-hosted-inference/server.py` loads SDXL, generates the baseline image, loads the LoRA, generates the diverse image, and returns both PNGs as base64 JSON.
+Public users reach only the `web` service. The `inference` service is internal to Docker Compose and protected with `INFERENCE_API_KEY` for accidental exposure scenarios.
 
-## Directory Map
+## Runtime Services
 
-| Path                               | Role                                                                     |
-| ---------------------------------- | ------------------------------------------------------------------------ |
-| `app/api/generate/route.ts`        | Public app API route, env validation, user-facing error hints            |
-| `lib/generate-comparison/`         | Shared request/response types and the self-hosted HTTP client            |
-| `self-hosted-inference/`           | FastAPI GPU server package: `server.py`, requirements, setup docs        |
-| `components/UnlearningBiasApp.tsx` | Client UI for prompt controls, comparison panels, history, and downloads |
+| Service | Role |
+| --- | --- |
+| `web` | Serves the Next.js UI and `/api/generate`; exposed on `3000:3000`. |
+| `inference` | Runs FastAPI, SDXL, and LoRA generation on a CUDA GPU; internal port `8000`. |
+| `hf-cache` | Docker volume mounted at `/models/huggingface` to avoid redownloading model weights. |
+
+## Code Map
+
+| Path | Role |
+| --- | --- |
+| `app/api/generate/route.ts` | Public app API route, env validation, and user-facing error hints. |
+| `lib/generate-comparison/self-hosted.ts` | Sends generation JSON and `x-inference-api-key` to the GPU service. |
+| `self-hosted-inference/server.py` | FastAPI service; `/health` is public and `/generate` can require `INFERENCE_API_KEY`. |
+| `Dockerfile` | Production Next.js standalone image. |
+| `self-hosted-inference/Dockerfile` | CUDA/PyTorch inference image. |
+| `docker-compose.yml` | Two-service public deployment for a GPU host. |
 
 ## Environment Contract
 
-The Next.js server requires:
+For Docker, `.env.docker` supplies:
 
 ```env
-INFERENCE_API_URL=https://YOUR-GPU-API.example.com
 LORA_WEIGHTS_URL=https://huggingface.co/you/repo/resolve/main/your-lora.safetensors
-INFERENCE_API_NGROK_SKIP_BROWSER_WARNING=1
+INFERENCE_API_KEY=replace-with-a-long-random-secret
+HF_TOKEN=
+SDXL_MODEL_ID=stabilityai/stable-diffusion-xl-base-1.0
 ```
 
-`INFERENCE_API_URL` is the origin only. The app appends `/generate`.
+`docker-compose.yml` sets `INFERENCE_API_URL=http://inference:8000` for the web container. In non-Docker deployments, set `INFERENCE_API_URL` yourself.
 
 ## JSON Contract
 
@@ -68,6 +71,12 @@ Next.js sends this body to the FastAPI server:
 }
 ```
 
+When `INFERENCE_API_KEY` is set, Next.js also sends:
+
+```txt
+x-inference-api-key: <shared secret>
+```
+
 The FastAPI server returns:
 
 ```json
@@ -80,4 +89,4 @@ The FastAPI server returns:
 
 ## Public Hosting Notes
 
-The Next.js app can run on a managed Next host or with `next start` behind a reverse proxy. The GPU server must be reachable from that hosted Next.js server, not just from your laptop. Colab/ngrok works for demos; a persistent GPU machine or cloud GPU endpoint is the better public setup.
+Run this stack on a GPU host with NVIDIA Container Toolkit. Put a reverse proxy or managed load balancer in front of the `web` container for TLS and public traffic. Keep `inference` private to the Docker network whenever possible.

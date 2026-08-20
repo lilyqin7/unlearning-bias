@@ -1,6 +1,6 @@
 # Self-hosted GPU inference
 
-This folder contains the FastAPI server that powers `POST /api/generate` in the Next.js app. Run it on Google Colab, a cloud GPU VM, or your own NVIDIA machine.
+This folder contains the FastAPI server that powers `POST /api/generate` in the Next.js app. It can run directly with Python or inside the CUDA Docker image defined here.
 
 The Next.js app calls:
 
@@ -8,12 +8,54 @@ The Next.js app calls:
 POST ${INFERENCE_API_URL}/generate
 ```
 
-## Requirements
+When `INFERENCE_API_KEY` is set, `/generate` requires:
 
-- NVIDIA GPU with CUDA
-- Python environment that can install PyTorch, Diffusers, FastAPI, and Uvicorn
+```txt
+x-inference-api-key: <shared secret>
+```
+
+`/health` stays public for container healthchecks.
+
+## Docker Requirements
+
+- NVIDIA GPU
+- NVIDIA driver installed on the host
+- NVIDIA Container Toolkit installed
+- Docker Compose with GPU device support
 - Access to `stabilityai/stable-diffusion-xl-base-1.0` on Hugging Face
 - A direct `.safetensors` LoRA URL for `LORA_WEIGHTS_URL`
+
+## Docker Usage
+
+From the repo root:
+
+```bash
+cp .env.docker.example .env.docker
+docker compose --env-file .env.docker up --build
+```
+
+The inference container:
+
+- runs `uvicorn server:app --host 0.0.0.0 --port 8000`
+- mounts Hugging Face cache at `/models/huggingface`
+- reads `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` if the model requires auth
+- reads `INFERENCE_API_KEY` to protect `/generate`
+
+## Manual Python Usage
+
+```bash
+cd self-hosted-inference
+pip install -r requirements.txt
+uvicorn server:app --host 0.0.0.0 --port 8000
+```
+
+Then set the Next.js app environment:
+
+```env
+INFERENCE_API_URL=http://127.0.0.1:8000
+LORA_WEIGHTS_URL=https://huggingface.co/you/repo/resolve/main/your-lora.safetensors
+INFERENCE_API_KEY=replace-with-the-same-secret
+```
 
 ## Hugging Face Setup
 
@@ -26,72 +68,6 @@ POST ${INFERENCE_API_URL}/generate
    https://huggingface.co/<you>/<repo>/resolve/main/<name>.safetensors
    ```
 
-## Run on Google Colab
-
-1. Create a new Colab notebook and choose a GPU runtime.
-2. Upload this folder, or clone the repo and `cd` into `self-hosted-inference`.
-3. Install dependencies:
-
-   ```python
-   %cd /content/self-hosted-inference
-   !pip install -q -r requirements.txt
-   ```
-
-4. Set a Hugging Face token if needed:
-
-   ```python
-   import os
-   os.environ["HF_TOKEN"] = "hf_xxxxxxxx"
-   ```
-
-5. Start FastAPI:
-
-   ```python
-   !nohup uvicorn server:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
-   !sleep 3
-   !curl -s http://127.0.0.1:8000/health
-   ```
-
-   You should see:
-
-   ```json
-   {"status":"ok"}
-   ```
-
-6. Expose the server with ngrok:
-
-   ```python
-   !pip install -q pyngrok
-   from pyngrok import ngrok
-   ngrok.set_auth_token("PASTE_YOUR_AUTHTOKEN_HERE")
-   http_tunnel = ngrok.connect(8000, bind_tls=True)
-   print("PUBLIC URL:", http_tunnel.public_url)
-   ```
-
-7. Put that public origin in the Next.js environment as `INFERENCE_API_URL`. Do not include `/generate`.
-
-## Run on a Local or Cloud GPU
-
-```bash
-cd self-hosted-inference
-pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port 8000
-```
-
-Expose the service through your reverse proxy, tunnel, or cloud load balancer. The public URL must be reachable by the hosted Next.js server.
-
-## Next.js Environment
-
-Set these in `.env.local` for local development, or in your hosting provider's environment UI for public hosting:
-
-```env
-INFERENCE_API_URL=https://YOUR-GPU-API.example.com
-LORA_WEIGHTS_URL=https://huggingface.co/you/repo/resolve/main/your-lora.safetensors
-INFERENCE_API_NGROK_SKIP_BROWSER_WARNING=1
-```
-
-`INFERENCE_API_NGROK_SKIP_BROWSER_WARNING=1` is only needed for ngrok browser-warning responses.
-
 ## Security
 
-Anyone who can reach `/generate` can burn GPU time. For public apps, put the GPU server behind a stable domain and add protection such as rate limiting, auth, or a reverse proxy allowlist that only permits traffic from your Next.js host.
+Anyone who can reach `/generate` can burn GPU time. The Docker Compose setup keeps inference internal and uses a shared API key for defense in depth. For public deployments, expose only the web container through your reverse proxy or load balancer.
